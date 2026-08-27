@@ -1,3 +1,8 @@
-fastapi
+fastapi>=0.110.0
 uvicorn
-yt-dlp
+yt-dlp>=2025.1.1
+quickjs>=1.19.4
+boto3>=1.34.0
+requests>=2.31.0
+python-multipart
+python-dotenv

@@ -2,7 +2,6 @@
 yt-dlp helper utilities.
 
 Wraps yt-dlp Python API for use in Vercel serverless functions.
-All downloads use /tmp as the working directory (only writable path on Vercel).
 """
 
 from __future__ import annotations
@@ -26,6 +25,8 @@ def _base_opts() -> dict[str, Any]:
         # Restrict to safe operations in serverless
         "noplaylist": True,
         "socket_timeout": 30,
+        # Allow quickjs to be used if available
+        "compat_opts": ["no-direct-ydl-js"],
     }
 
 
@@ -100,17 +101,15 @@ def get_stream_url(url: str, type_: str = "audio", quality: str = "worst") -> di
     Returns:
         Dict with url, ext, filesize, codec info, and http_headers.
     """
-    # Build format selector — prefer https protocol to avoid m3u8 manifests
+    # Build format selector — force extensions to avoid HLS manifests (m3u8)
     if quality in ("worst", "best"):
         if type_ == "audio":
-            # Prefer direct https audio; fall back to any worstaudio
-            format_selector = f"{quality}audio[protocol=https]/{quality}audio"
+            format_selector = f"{quality}audio[ext=m4a]/{quality}audio[ext=webm]"
         elif type_ == "video":
-            format_selector = f"{quality}video[protocol=https]/{quality}video"
+            format_selector = f"{quality}video[ext=mp4]"
         else:  # both
-            format_selector = f"{quality}[protocol=https]/{quality}"
+            format_selector = f"{quality}[ext=mp4]"
     else:
-        # Assume it's a format_id
         format_selector = quality
 
     opts = _base_opts()
@@ -130,6 +129,8 @@ def get_stream_url(url: str, type_: str = "audio", quality: str = "worst") -> di
         src = info
 
     return {
+        "id": info.get("id"),
+        "title": info.get("title"),
         "url": src.get("url") or info.get("url"),
         "ext": src.get("ext") or info.get("ext"),
         "filesize": src.get("filesize") or src.get("filesize_approx") or info.get("filesize") or info.get("filesize_approx"),
@@ -142,55 +143,3 @@ def get_stream_url(url: str, type_: str = "audio", quality: str = "worst") -> di
         "http_headers": src.get("http_headers") or info.get("http_headers", {}),
     }
 
-
-def download_media(url: str, format_selector: str = "worstaudio") -> tuple[str, str, int]:
-    """
-    Download media to /tmp and return file info.
-
-    No ffmpeg, no post-processing — downloads the raw stream as-is.
-
-    Args:
-        url: Video URL.
-        format_selector: yt-dlp format string (e.g. "worstaudio", "worst", format_id).
-
-    Returns:
-        Tuple of (file_path, content_type, file_size).
-    """
-    tmpdir = tempfile.mkdtemp(dir=TMP_DIR)
-    outtmpl = os.path.join(tmpdir, "%(id)s.%(ext)s")
-
-    # For standard quality selectors, prefer HTTPS direct streams
-    # HLS/DASH manifests (m3u8) require ffmpeg to process
-    if format_selector in ("worstaudio", "bestaudio", "worst", "best",
-                           "worstvideo", "bestvideo"):
-        format_selector = f"{format_selector}[protocol=https]/{format_selector}"
-
-    opts = _base_opts()
-    opts.update({
-        "format": format_selector,
-        "outtmpl": outtmpl,
-        # No post-processors — raw download only
-    })
-
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-
-    ext = info.get("ext", "unknown")
-    video_id = info.get("id", "media")
-    filepath = os.path.join(tmpdir, f"{video_id}.{ext}")
-
-    # Map extension to MIME type
-    mime_map = {
-        "webm": "audio/webm",
-        "m4a": "audio/mp4",
-        "mp4": "video/mp4",
-        "opus": "audio/opus",
-        "ogg": "audio/ogg",
-        "mp3": "audio/mpeg",
-        "wav": "audio/wav",
-        "flac": "audio/flac",
-    }
-    content_type = mime_map.get(ext, "application/octet-stream")
-    file_size = os.path.getsize(filepath)
-
-    return filepath, content_type, file_size
