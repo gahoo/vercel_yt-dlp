@@ -19,7 +19,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # Add project root to path so we can import lib/
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lib.ytdlp_helper import extract_info, get_subtitle_content, get_stream_url
 from lib.r2_helper import check_object_exists, generate_presigned_url, stream_upload_to_r2, get_s3_client
@@ -259,3 +258,4 @@ async def api_transcribe(
             stream.close()
         if response_obj:
             response_obj.close()
+
