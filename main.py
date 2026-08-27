@@ -16,7 +16,7 @@ load_dotenv()  # Load .env variables for local development
 
 from fastapi import FastAPI, Query, Request, Response, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 # Add project root to path so we can import lib/
 
@@ -147,11 +147,13 @@ async def api_stream(
 async def api_download(
     url: str = Query(...),
     format: str = Query("bestaudio"),
+    redirect: bool = Query(False, description="If true, 302 redirect to the R2 download URL instead of returning JSON"),
 ):
     """
     Stream download audio from YouTube and upload directly to R2.
     Returns a pre-signed URL for the client to download the file.
     If the file already exists in R2, returns the URL immediately.
+    When redirect=true, responds with a 302 redirect for direct download.
     """
     bucket = os.environ.get("R2_BUCKET_NAME")
     if not bucket:
@@ -174,6 +176,8 @@ async def api_download(
     # 1. Check if exists (Cache hit)
     if check_object_exists(bucket, object_key):
         presigned = generate_presigned_url(bucket, object_key)
+        if redirect:
+            return RedirectResponse(url=presigned, status_code=302)
         return {"status": "cached", "key": object_key, "url": presigned}
 
     # 2. Stream upload (Cache miss)
@@ -184,6 +188,8 @@ async def api_download(
 
     # 3. Generate URL
     presigned = generate_presigned_url(bucket, object_key)
+    if redirect:
+        return RedirectResponse(url=presigned, status_code=302)
     return {"status": "uploaded", "key": object_key, "url": presigned}
 
 
