@@ -256,7 +256,7 @@ def api_download(
         }
         if extra_meta:
             resp.update(extra_meta)
-        return JSONResponse(content=resp)
+        return JSONResponse(content=resp, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     import urllib.parse
     
@@ -300,7 +300,7 @@ def api_download(
                         "url": presigned,
                         "uploaded_at": meta_data.get("uploaded_at"),
                         "fast_cache_hit": True
-                    })
+                    }, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
         elif is_specific_format:
             # FALLBACK: No global metadata cache, but format is specific (e.g. 140).
             # Now we don't need a loop! Just one exact probe.
@@ -326,7 +326,7 @@ def api_download(
                     "url": presigned,
                     "uploaded_at": meta_data.get("uploaded_at"),
                     "fast_cache_hit": "fallback"
-                })
+                }, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     try:
         info = get_stream_url(target, type_="audio", quality=target_format, player_client=player_client)
