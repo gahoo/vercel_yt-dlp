@@ -78,7 +78,7 @@ async def root():
     }
 
 @app.get("/api/info", dependencies=[Depends(verify_api_key)])
-async def api_info(
+def api_info(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
     overwrite: bool = Query(False, description="Force refresh metadata cache"),
@@ -155,7 +155,7 @@ async def api_info(
     return JSONResponse(content=result)
 
 @app.get("/api/subtitles", dependencies=[Depends(verify_api_key)])
-async def api_subtitles(
+def api_subtitles(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
     lang: str = Query("en"),
@@ -181,7 +181,7 @@ async def api_subtitles(
     return Response(content=content, media_type=f"{ctype[format]}; charset=utf-8")
 
 @app.get("/api/stream", dependencies=[Depends(verify_api_key)])
-async def api_stream(
+def api_stream(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
     type: str = Query("audio", description="'audio', 'video', or 'both' (ignored if format is an ID)"),
@@ -209,7 +209,7 @@ async def api_stream(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/download", dependencies=[Depends(verify_api_key)])
-async def api_download(
+def api_download(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
     quality: str = Query("bestaudio", description="Legacy quality selector (e.g. 'worst', 'bestaudio')"),
@@ -371,7 +371,7 @@ async def api_download(
 
 
 @app.get("/api/transcribe", dependencies=[Depends(verify_api_key)])
-async def api_transcribe(
+def api_transcribe(
     key: str = Query(None, description="R2 object key (e.g., audio/123_140.m4a)"),
     url: str = Query(None, description="Direct audio URL to stream from"),
     model: str = Query("whisper-large-v3", description="Groq Whisper model"),
@@ -487,7 +487,7 @@ async def api_cookies_upload(
 
 
 @app.get("/api/cookies", dependencies=[Depends(verify_api_key)])
-async def api_cookies_status():
+def api_cookies_status():
     """
     Check the status of stored cookies (uploaded_at, expires_at, expired).
     Does not return cookie content for security.
@@ -504,7 +504,7 @@ async def api_cookies_status():
 
 
 @app.delete("/api/cookies", dependencies=[Depends(verify_api_key)])
-async def api_cookies_delete():
+def api_cookies_delete():
     """Delete stored cookies from R2."""
     bucket = os.environ.get("R2_BUCKET_NAME")
     if not bucket:
@@ -523,7 +523,7 @@ async def api_cookies_delete():
 # ---------------------------------------------------------------------------
 
 @app.delete("/api/cache", dependencies=[Depends(verify_api_key)])
-async def api_cache_delete(
+def api_cache_delete(
     key: str = Query(None, description="Exact object key to delete (e.g. 'audio/dQw4w9WgXcQ_140.m4a')"),
     prefix: str = Query(None, description="Prefix to bulk delete (e.g. 'audio/dQw4w9WgXcQ')"),
 ):
