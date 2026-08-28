@@ -153,7 +153,8 @@ async def api_stream(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
     type: str = Query("audio", description="'audio', 'video', or 'both' (ignored if format is an ID)"),
-    format: str = Query("worst", description="Format selector (e.g. 'worst', 'bestaudio', '140')"),
+    quality: str = Query("worst", description="Legacy quality selector (e.g. 'worst', 'bestaudio')"),
+    format: str = Query(None, description="Format selector (e.g. '140', overrides 'quality')"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Get direct stream URL(s) (prefers https over m3u8)."""
@@ -161,8 +162,10 @@ async def api_stream(
     if not target:
         raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
 
+    target_format = format or quality
+
     try:
-        result = get_stream_url(target, type_=type, quality=format, player_client=player_client)
+        result = get_stream_url(target, type_=type, quality=target_format, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not result.get("url"):
@@ -177,7 +180,8 @@ async def api_stream(
 async def api_download(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
-    format: str = Query("bestaudio"),
+    quality: str = Query("bestaudio", description="Legacy quality selector (e.g. 'worst', 'bestaudio')"),
+    format: str = Query(None, description="Format selector (e.g. '140', overrides 'quality')"),
     redirect: bool = Query(False, description="If true, 302 redirect to the R2 download URL instead of returning JSON"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
@@ -191,12 +195,14 @@ async def api_download(
     if not target:
         raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
 
+    target_format = format or quality
+
     bucket = os.environ.get("R2_BUCKET_NAME")
     if not bucket:
         raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
 
     try:
-        info = get_stream_url(target, type_="audio", quality=format, player_client=player_client)
+        info = get_stream_url(target, type_="audio", quality=target_format, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to get stream: {e}")
 
@@ -209,17 +215,28 @@ async def api_download(
     
     # Use resolved format_id in cache key to avoid collisions
     # Default to the requested format string if format_id is missing
-    resolved_format_id = info.get("format_id") or format.replace("/", "_")
+    resolved_format_id = info.get("format_id") or target_format.replace("/", "_")
     object_key = f"media/{video_id}_{resolved_format_id}.{ext}"
     
     content_type = "audio/mp4" if ext == "m4a" else ("audio/webm" if ext == "webm" else "application/octet-stream")
+
+    def make_response(status_val, presigned_url):
+        return {
+            "status": status_val,
+            "id": video_id,
+            "title": info.get("title"),
+            "format_id": info.get("format_id"),
+            "ext": ext,
+            "key": object_key,
+            "url": presigned_url
+        }
 
     # 1. Check if exists (Cache hit)
     if check_object_exists(bucket, object_key):
         presigned = generate_presigned_url(bucket, object_key)
         if redirect:
             return RedirectResponse(url=presigned, status_code=302)
-        return {"status": "cached", "key": object_key, "url": presigned}
+        return make_response("cached", presigned)
 
     # 2. Stream upload (Cache miss)
     try:
@@ -231,7 +248,7 @@ async def api_download(
     presigned = generate_presigned_url(bucket, object_key)
     if redirect:
         return RedirectResponse(url=presigned, status_code=302)
-    return {"status": "uploaded", "key": object_key, "url": presigned}
+    return make_response("uploaded", presigned)
 
 
 @app.get("/api/transcribe", dependencies=[Depends(verify_api_key)])
