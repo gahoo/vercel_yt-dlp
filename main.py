@@ -201,6 +201,35 @@ async def api_download(
     if not bucket:
         raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
 
+    # Fast-path cache probe: if we know the video_id and it's a specific format,
+    # we can check R2 directly and skip the 5-second yt-dlp extraction.
+    import re
+    extracted_id = id
+    if not extracted_id and url:
+        match = re.search(r'(?:v=|youtu\.be/|/v/|/embed/|/shorts/)([^&?]+)', url)
+        if match:
+            extracted_id = match.group(1)
+            
+    is_specific_format = target_format not in ("bestaudio", "worst", "best", "bestvideo")
+    if extracted_id and is_specific_format:
+        # Probe common extensions to find an exact match in cache
+        for possible_prefix in ["audio", "video"]:
+            for possible_ext in ["m4a", "webm", "mp4"]:
+                probe_key = f"{possible_prefix}/{extracted_id}_{target_format}.{possible_ext}"
+                if check_object_exists(bucket, probe_key):
+                    presigned = generate_presigned_url(bucket, probe_key)
+                    if redirect:
+                        return RedirectResponse(url=presigned, status_code=302)
+                    return {
+                        "status": "cached",
+                        "id": extracted_id,
+                        "format_id": target_format,
+                        "ext": possible_ext,
+                        "key": probe_key,
+                        "url": presigned,
+                        "fast_cache_hit": True
+                    }
+
     try:
         info = get_stream_url(target, type_="audio", quality=target_format, player_client=player_client)
     except Exception as e:
@@ -231,6 +260,7 @@ async def api_download(
             "title": info.get("title"),
             "format_id": info.get("format_id"),
             "ext": ext,
+            "filesize": info.get("filesize") or info.get("filesize_approx"),
             "key": object_key,
             "url": presigned_url
         }
