@@ -21,7 +21,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 # Add project root to path so we can import lib/
 
 from lib.ytdlp_helper import extract_info, get_subtitle_content, get_stream_url
-from lib.r2_helper import check_object_exists, generate_presigned_url, stream_upload_to_r2, get_s3_client
+from lib.r2_helper import (
+    check_object_exists, generate_presigned_url, stream_upload_to_r2, get_s3_client,
+    upload_cookies_to_r2, get_cookies_status, delete_cookies_from_r2,
+)
 
 # ---------------------------------------------------------------------------
 # App & CORS
@@ -37,8 +40,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["Authorization", "X-API-Key"],
+    allow_methods=["GET", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "X-API-Key", "Content-Type"],
 )
 
 # ---------------------------------------------------------------------------
@@ -68,7 +71,7 @@ async def verify_api_key(request: Request):
 async def root():
     return {
         "service": "yt-dlp API",
-        "endpoints": ["/api/info", "/api/subtitles", "/api/stream", "/api/download", "/api/transcribe"],
+        "endpoints": ["/api/info", "/api/subtitles", "/api/stream", "/api/download", "/api/transcribe", "/api/cookies"],
         "docs": "/docs",
     }
 
@@ -265,3 +268,73 @@ async def api_transcribe(
         if response_obj:
             response_obj.close()
 
+# ---------------------------------------------------------------------------
+# Routes - Cookie Management
+# ---------------------------------------------------------------------------
+
+@app.put("/api/cookies", dependencies=[Depends(verify_api_key)])
+async def api_cookies_upload(
+    request: Request,
+    expires: str = Query(None, description="TTL like '4h', '30m', '1d', or ISO datetime. Auto-detects from cookie content if omitted."),
+):
+    """
+    Upload Netscape-format cookies for YouTube authentication.
+    Send the cookie file content as the raw request body.
+
+    The expiry is determined by (in order of priority):
+    1. The `expires` query parameter (e.g. '4h', '1d')
+    2. Auto-detection from the earliest YouTube auth cookie expiry in the file
+    """
+    bucket = os.environ.get("R2_BUCKET_NAME")
+    if not bucket:
+        raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
+
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Request body is empty. Send Netscape-format cookie text.")
+
+    cookie_content = body.decode("utf-8")
+
+    # Basic validation: check it looks like a Netscape cookie file
+    lines = [l.strip() for l in cookie_content.splitlines() if l.strip() and not l.strip().startswith("#")]
+    if not lines:
+        raise HTTPException(status_code=400, detail="No valid cookie lines found. Expected Netscape cookie format.")
+
+    try:
+        result = upload_cookies_to_r2(cookie_content, bucket, expires=expires)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload cookies: {e}")
+
+    return result
+
+
+@app.get("/api/cookies", dependencies=[Depends(verify_api_key)])
+async def api_cookies_status():
+    """
+    Check the status of stored cookies (uploaded_at, expires_at, expired).
+    Does not return cookie content for security.
+    """
+    bucket = os.environ.get("R2_BUCKET_NAME")
+    if not bucket:
+        raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
+
+    status = get_cookies_status(bucket)
+    if not status:
+        return {"status": "none", "message": "No cookies stored"}
+
+    return {"status": "active" if not status["expired"] else "expired", **status}
+
+
+@app.delete("/api/cookies", dependencies=[Depends(verify_api_key)])
+async def api_cookies_delete():
+    """Delete stored cookies from R2."""
+    bucket = os.environ.get("R2_BUCKET_NAME")
+    if not bucket:
+        raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
+
+    try:
+        delete_cookies_from_r2(bucket)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete cookies: {e}")
+
+    return {"status": "deleted"}

@@ -18,7 +18,7 @@ TMP_DIR = "/tmp"
 
 def _base_opts() -> dict[str, Any]:
     """Base yt-dlp options shared across all operations."""
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "no_color": True,
@@ -28,6 +28,22 @@ def _base_opts() -> dict[str, Any]:
         # Allow quickjs to be used if available
         "compat_opts": ["no-direct-ydl-js"],
     }
+
+    # Auto-load cookies from R2 if available and not expired
+    try:
+        bucket = os.environ.get("R2_BUCKET_NAME")
+        if bucket:
+            from lib.r2_helper import get_cookies_from_r2
+            cookie_content = get_cookies_from_r2(bucket)
+            if cookie_content:
+                cookie_file = os.path.join(TMP_DIR, "ytdlp_cookies.txt")
+                with open(cookie_file, "w", encoding="utf-8") as f:
+                    f.write(cookie_content)
+                opts["cookiefile"] = cookie_file
+    except Exception:
+        pass  # Silently continue without cookies
+
+    return opts
 
 
 def extract_info(url: str) -> dict[str, Any]:
