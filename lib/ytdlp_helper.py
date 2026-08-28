@@ -16,7 +16,7 @@ import yt_dlp
 TMP_DIR = "/tmp"
 
 
-def _base_opts() -> dict[str, Any]:
+def _base_opts(player_client: str | None = None) -> dict[str, Any]:
     """Base yt-dlp options shared across all operations."""
     opts = {
         "quiet": True,
@@ -28,6 +28,11 @@ def _base_opts() -> dict[str, Any]:
         # Allow quickjs to be used if available
         "compat_opts": ["no-direct-ydl-js"],
     }
+
+    # Set player_client if specified (e.g. "ios", "mediaconnect,ios,web")
+    if player_client:
+        clients = [c.strip() for c in player_client.split(",")]
+        opts["extractor_args"] = {"youtube": {"player_client": clients}}
 
     # Auto-load cookies from R2 if available and not expired
     try:
@@ -46,20 +51,20 @@ def _base_opts() -> dict[str, Any]:
     return opts
 
 
-def extract_info(url: str) -> dict[str, Any]:
+def extract_info(url: str, player_client: str | None = None) -> dict[str, Any]:
     """
     Extract video metadata without downloading.
 
     Returns a sanitized info dict containing title, duration, formats,
     subtitles, thumbnails, etc.
     """
-    opts = _base_opts()
+    opts = _base_opts(player_client=player_client)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
         return ydl.sanitize_info(info)
 
 
-def get_subtitle_content(url: str, lang: str = "en", fmt: str = "vtt", auto: bool = True) -> str | None:
+def get_subtitle_content(url: str, lang: str = "en", fmt: str = "vtt", auto: bool = True, player_client: str | None = None) -> str | None:
     """
     Download subtitle for a specific language and return its text content.
 
@@ -68,13 +73,14 @@ def get_subtitle_content(url: str, lang: str = "en", fmt: str = "vtt", auto: boo
         lang: Language code (e.g. "en", "zh-Hans").
         fmt: Subtitle format ("vtt", "srt", "json3").
         auto: Whether to fall back to auto-generated captions.
+        player_client: YouTube player client (e.g. "ios", "mediaconnect,web").
 
     Returns:
         Subtitle text content, or None if not available.
     """
     # Use a unique temp directory per request to avoid collisions
     with tempfile.TemporaryDirectory(dir=TMP_DIR) as tmpdir:
-        opts = _base_opts()
+        opts = _base_opts(player_client=player_client)
         opts.update({
             "skip_download": True,
             "writesubtitles": True,
@@ -102,7 +108,7 @@ def get_subtitle_content(url: str, lang: str = "en", fmt: str = "vtt", auto: boo
         return None
 
 
-def get_stream_url(url: str, type_: str = "audio", quality: str = "worst") -> dict[str, Any]:
+def get_stream_url(url: str, type_: str = "audio", quality: str = "worst", player_client: str | None = None) -> dict[str, Any]:
     """
     Extract direct stream URL(s) without downloading.
 
@@ -113,6 +119,7 @@ def get_stream_url(url: str, type_: str = "audio", quality: str = "worst") -> di
         url: Video URL.
         type_: "audio", "video", or "both".
         quality: "worst", "best", or a specific format_id.
+        player_client: YouTube player client (e.g. "ios", "mediaconnect,web").
 
     Returns:
         Dict with url, ext, filesize, codec info, and http_headers.
@@ -128,7 +135,7 @@ def get_stream_url(url: str, type_: str = "audio", quality: str = "worst") -> di
     else:
         format_selector = quality
 
-    opts = _base_opts()
+    opts = _base_opts(player_client=player_client)
     opts["format"] = format_selector
 
     with yt_dlp.YoutubeDL(opts) as ydl:

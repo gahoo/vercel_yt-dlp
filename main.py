@@ -76,10 +76,13 @@ async def root():
     }
 
 @app.get("/api/info", dependencies=[Depends(verify_api_key)])
-async def api_info(url: str = Query(...)):
+async def api_info(
+    url: str = Query(...),
+    player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
+):
     """Extract video metadata without downloading."""
     try:
-        info = extract_info(url)
+        info = extract_info(url, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -113,12 +116,13 @@ async def api_subtitles(
     lang: str = Query("en"),
     format: str = Query("vtt"),
     auto: bool = Query(True),
+    player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Get subtitle/caption content."""
     if format not in ("vtt", "srt", "json3"):
         raise HTTPException(status_code=400, detail="Use vtt, srt, or json3.")
     try:
-        content = get_subtitle_content(url, lang=lang, fmt=format, auto=auto)
+        content = get_subtitle_content(url, lang=lang, fmt=format, auto=auto, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if content is None:
@@ -132,10 +136,11 @@ async def api_stream(
     url: str = Query(...),
     type: str = Query("audio"),
     quality: str = Query("worst"),
+    player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Get direct stream URL(s) (prefers https over m3u8)."""
     try:
-        result = get_stream_url(url, type_=type, quality=quality)
+        result = get_stream_url(url, type_=type, quality=quality, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not result.get("url"):
@@ -151,6 +156,7 @@ async def api_download(
     url: str = Query(...),
     format: str = Query("bestaudio"),
     redirect: bool = Query(False, description="If true, 302 redirect to the R2 download URL instead of returning JSON"),
+    player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """
     Stream download audio from YouTube and upload directly to R2.
@@ -163,7 +169,7 @@ async def api_download(
         raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
 
     try:
-        info = get_stream_url(url, type_="audio", quality=format)
+        info = get_stream_url(url, type_="audio", quality=format, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to get stream: {e}")
 
