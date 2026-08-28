@@ -542,6 +542,11 @@ def api_cache_delete(
     if not key and not prefix:
         raise HTTPException(status_code=400, detail="Must provide either 'key' or 'prefix'")
         
+    if key and "/" not in key:
+        key = f"media/{key}"
+    if prefix and "/" not in prefix:
+        prefix = f"media/{prefix}"
+        
     bucket = os.environ.get("R2_BUCKET_NAME")
     if not bucket:
         raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
