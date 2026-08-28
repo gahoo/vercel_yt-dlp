@@ -24,6 +24,7 @@ from lib.ytdlp_helper import extract_info, get_subtitle_content, get_stream_url
 from lib.r2_helper import (
     check_object_exists, generate_presigned_url, stream_upload_to_r2, get_s3_client,
     upload_cookies_to_r2, get_cookies_status, delete_cookies_from_r2,
+    delete_object, delete_objects_by_prefix
 )
 
 # ---------------------------------------------------------------------------
@@ -183,6 +184,7 @@ async def api_download(
     quality: str = Query("bestaudio", description="Legacy quality selector (e.g. 'worst', 'bestaudio')"),
     format: str = Query(None, description="Format selector (e.g. '140', overrides 'quality')"),
     redirect: bool = Query(False, description="If true, 302 redirect to the R2 download URL instead of returning JSON"),
+    overwrite: bool = Query(False, description="If true, skip cache and force a new download to R2"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """
@@ -211,7 +213,7 @@ async def api_download(
             extracted_id = match.group(1)
             
     is_specific_format = target_format not in ("bestaudio", "worst", "best", "bestvideo")
-    if extracted_id and is_specific_format:
+    if not overwrite and extracted_id and is_specific_format:
         # Probe common extensions to find an exact match in cache
         for possible_prefix in ["audio", "video"]:
             for possible_ext in ["m4a", "webm", "mp4"]:
@@ -266,7 +268,7 @@ async def api_download(
         }
 
     # 1. Check if exists (Cache hit)
-    if check_object_exists(bucket, object_key):
+    if not overwrite and check_object_exists(bucket, object_key):
         presigned = generate_presigned_url(bucket, object_key)
         if redirect:
             return RedirectResponse(url=presigned, status_code=302)
@@ -427,3 +429,38 @@ async def api_cookies_delete():
         raise HTTPException(status_code=500, detail=f"Failed to delete cookies: {e}")
 
     return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Routes - Cache Management
+# ---------------------------------------------------------------------------
+
+@app.delete("/api/cache", dependencies=[Depends(verify_api_key)])
+async def api_cache_delete(
+    key: str = Query(None, description="Exact object key to delete (e.g. 'audio/dQw4w9WgXcQ_140.m4a')"),
+    prefix: str = Query(None, description="Prefix to bulk delete (e.g. 'audio/dQw4w9WgXcQ')"),
+):
+    """
+    Delete cached media from R2.
+    Provide either `key` for exact deletion or `prefix` for bulk deletion.
+    """
+    if not key and not prefix:
+        raise HTTPException(status_code=400, detail="Must provide either 'key' or 'prefix'")
+        
+    bucket = os.environ.get("R2_BUCKET_NAME")
+    if not bucket:
+        raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
+
+    try:
+        if prefix:
+            deleted = delete_objects_by_prefix(bucket, prefix)
+            return {"status": "deleted", "count": len(deleted), "keys": deleted}
+        else:
+            success = delete_object(bucket, key)
+            if not success:
+                # delete_object returns True even if the object doesn't exist, 
+                # but might return False on actual connection error.
+                raise HTTPException(status_code=500, detail="Failed to delete object")
+            return {"status": "deleted", "key": key}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")

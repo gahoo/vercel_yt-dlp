@@ -32,6 +32,35 @@ def check_object_exists(bucket_name: str, key: str) -> bool:
     except Exception:
         return False
 
+def delete_object(bucket_name: str, key: str) -> bool:
+    """Delete a specific object from R2."""
+    client = get_s3_client()
+    try:
+        client.delete_object(Bucket=bucket_name, Key=key)
+        return True
+    except Exception:
+        return False
+
+def delete_objects_by_prefix(bucket_name: str, prefix: str) -> list[str]:
+    """Delete all objects matching a prefix. Returns list of deleted keys."""
+    client = get_s3_client()
+    deleted_keys = []
+    
+    paginator = client.get_paginator('list_objects_v2')
+    for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+        if 'Contents' not in page:
+            continue
+            
+        objects_to_delete = [{'Key': obj['Key']} for obj in page['Contents']]
+        if objects_to_delete:
+            client.delete_objects(
+                Bucket=bucket_name,
+                Delete={'Objects': objects_to_delete, 'Quiet': True}
+            )
+            deleted_keys.extend([obj['Key'] for obj in objects_to_delete])
+            
+    return deleted_keys
+
 def generate_presigned_url(bucket_name: str, key: str, expires_in: int = 3600) -> str:
     """Generate a pre-signed download URL for R2."""
     client = get_s3_client()
