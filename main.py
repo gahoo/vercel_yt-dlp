@@ -217,7 +217,7 @@ def api_download(
     player_client: str = Query("default", description="Client to bypass age-gate/bot-blocks (e.g. 'ios', 'web')"),
     overwrite: bool = Query(False, description="Force re-download and overwrite R2 cache"),
     redirect: bool = Query(False, description="Redirect directly to the R2 url instead of returning JSON"),
-    true_stream: bool = Query(False, description="Use true memory-to-memory streaming (experimental)"),
+    r2stream: bool = Query(False, description="Use true memory-to-memory streaming (experimental)"),
 ):
     """
     Stream download audio from YouTube and upload directly to R2.
@@ -360,7 +360,7 @@ def api_download(
             "title": urllib.parse.quote(title),
             "ext": ext
         }
-        stream_upload_to_r2(audio_url, bucket, object_key, content_type, extra_metadata=s3_meta, true_stream=true_stream)
+        stream_upload_to_r2(audio_url, bucket, object_key, content_type, extra_metadata=s3_meta, r2stream=r2stream)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload to R2 failed: {e}")
 

@@ -112,10 +112,10 @@ def generate_presigned_url(bucket_name: str, key: str, expires_in: int = 3600, r
         ExpiresIn=expires_in
     )
 
-def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, content_type: str = "audio/mp4", extra_metadata: dict = None, true_stream: bool = False) -> None:
+def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, content_type: str = "audio/mp4", extra_metadata: dict = None, r2stream: bool = False) -> None:
     """
     Download from audio URL and upload to R2.
-    If true_stream is True, pipe directly memory-to-memory.
+    If r2stream is True, pipe directly memory-to-memory.
     Otherwise, buffer to a temporary file first (safer for Serverless memory limits).
     """
     client = get_s3_client()
@@ -132,7 +132,7 @@ def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, conte
     if extra_metadata:
         extra_args["Metadata"] = extra_metadata
 
-    if true_stream:
+    if r2stream:
         # True Memory-to-Memory streaming
         r = requests.get(audio_url, stream=True, timeout=30)
         r.raise_for_status()
