@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from lib.ytdlp_helper import extract_info, get_subtitle_content, get_stream_url, resolve_format
 from lib.r2_helper import (
-    check_object_exists, generate_presigned_url, stream_upload_to_r2, get_s3_client,
+    get_object_metadata, generate_presigned_url, stream_upload_to_r2, get_s3_client,
     upload_cookies_to_r2, get_cookies_status, delete_cookies_from_r2,
     delete_object, delete_objects_by_prefix,
     upload_metadata_to_r2, get_metadata_from_r2
@@ -256,55 +256,73 @@ async def api_download(
             resp.update(extra_meta)
         return JSONResponse(content=resp)
 
-    # 1. Precise Media Cache Probe (using metadata)
+    import urllib.parse
+    
+    def get_cd(title_val, ext_val):
+        """Generate ContentDisposition string for forcing filename."""
+        if not title_val or not ext_val:
+            return None
+        safe_name = urllib.parse.quote(f"{title_val}.{ext_val}")
+        return f"attachment; filename*=UTF-8''{safe_name}"
+
     is_specific_format = target_format not in ("bestaudio", "worst", "best", "bestvideo")
     
+    # 1. Precise Media Cache Probe
     if not overwrite and extracted_id and bucket:
         cached_meta = get_metadata_from_r2(extracted_id, bucket)
         if cached_meta:
-            # Resolve exact format from the cached metadata
             resolved = resolve_format(cached_meta.get("formats", []), target_format)
             if resolved:
                 r_format_id = resolved.get("format_id")
                 r_ext = resolved.get("ext", "m4a")
-                r_vcodec = resolved.get("vcodec")
-                r_prefix = "video" if r_vcodec and r_vcodec != "none" else "audio"
+                probe_key = f"media/{extracted_id}_{r_format_id}"
                 
-                probe_key = f"{r_prefix}/{extracted_id}_{r_format_id}.{r_ext}"
-                if check_object_exists(bucket, probe_key):
-                    presigned = generate_presigned_url(bucket, probe_key)
+                meta_data = get_object_metadata(bucket, probe_key)
+                if meta_data:
+                    # R2 object metadata dict keys are lowercase
+                    title_encoded = meta_data["metadata"].get("title")
+                    title = urllib.parse.unquote(title_encoded) if title_encoded else cached_meta.get("title")
+                    
+                    cd = get_cd(title, r_ext)
+                    presigned = generate_presigned_url(bucket, probe_key, response_content_disposition=cd)
                     if redirect:
                         return RedirectResponse(url=presigned, status_code=302)
                     return JSONResponse(content={
                         "status": "cached",
                         "id": extracted_id,
-                        "title": cached_meta.get("title"),
+                        "title": title,
                         "format_id": r_format_id,
                         "ext": r_ext,
-                        "filesize": resolved.get("filesize"),
+                        "filesize": meta_data.get("filesize") or resolved.get("filesize"),
                         "key": probe_key,
                         "url": presigned,
                         "fast_cache_hit": True
                     })
         elif is_specific_format:
-            # FALLBACK: No metadata cache, but format is specific (e.g. 140).
-            # Do a brute-force probe to skip the 5s yt-dlp delay.
-            for possible_prefix in ["audio", "video"]:
-                for possible_ext in ["m4a", "webm", "mp4"]:
-                    probe_key = f"{possible_prefix}/{extracted_id}_{target_format}.{possible_ext}"
-                    if check_object_exists(bucket, probe_key):
-                        presigned = generate_presigned_url(bucket, probe_key)
-                        if redirect:
-                            return RedirectResponse(url=presigned, status_code=302)
-                        return JSONResponse(content={
-                            "status": "cached",
-                            "id": extracted_id,
-                            "format_id": target_format,
-                            "ext": possible_ext,
-                            "key": probe_key,
-                            "url": presigned,
-                            "fast_cache_hit": "brute_force"
-                        })
+            # FALLBACK: No global metadata cache, but format is specific (e.g. 140).
+            # Now we don't need a loop! Just one exact probe.
+            probe_key = f"media/{extracted_id}_{target_format}"
+            meta_data = get_object_metadata(bucket, probe_key)
+            if meta_data:
+                title_encoded = meta_data["metadata"].get("title")
+                title = urllib.parse.unquote(title_encoded) if title_encoded else None
+                r_ext = meta_data["metadata"].get("ext", "unknown")
+                
+                cd = get_cd(title, r_ext)
+                presigned = generate_presigned_url(bucket, probe_key, response_content_disposition=cd)
+                if redirect:
+                    return RedirectResponse(url=presigned, status_code=302)
+                return JSONResponse(content={
+                    "status": "cached",
+                    "id": extracted_id,
+                    "title": title,
+                    "format_id": target_format,
+                    "ext": r_ext,
+                    "filesize": meta_data.get("filesize"),
+                    "key": probe_key,
+                    "url": presigned,
+                    "fast_cache_hit": "fallback"
+                })
 
     try:
         info = get_stream_url(target, type_="audio", quality=target_format, player_client=player_client)
@@ -318,31 +336,35 @@ async def api_download(
     video_id = info.get("id", "audio")
     ext = info.get("ext", "m4a")
     
-    # Check if this format contains a video track
-    vcodec = info.get("vcodec")
-    prefix = "video" if vcodec and vcodec != "none" else "audio"
-    
-    # Use resolved format_id in cache key to avoid collisions
     resolved_format_id = info.get("format_id") or target_format.replace("/", "_")
-    object_key = f"{prefix}/{video_id}_{resolved_format_id}.{ext}"
+    object_key = f"media/{video_id}_{resolved_format_id}"
     
     content_type = "audio/mp4" if ext == "m4a" else ("audio/webm" if ext == "webm" else "application/octet-stream")
 
+    title = info.get("title", video_id)
+    cd = get_cd(title, ext)
+
     # 1. Check if exists (Cache hit)
-    if not overwrite and check_object_exists(bucket, object_key):
-        presigned = generate_presigned_url(bucket, object_key)
-        if redirect:
-            return RedirectResponse(url=presigned, status_code=302)
-        return make_response("cached", presigned)
+    if not overwrite:
+        meta_data = get_object_metadata(bucket, object_key)
+        if meta_data:
+            presigned = generate_presigned_url(bucket, object_key, response_content_disposition=cd)
+            if redirect:
+                return RedirectResponse(url=presigned, status_code=302)
+            return make_response("cached", presigned)
 
     # 2. Stream upload (Cache miss)
     try:
-        stream_upload_to_r2(audio_url, bucket, object_key, content_type)
+        s3_meta = {
+            "title": urllib.parse.quote(title),
+            "ext": ext
+        }
+        stream_upload_to_r2(audio_url, bucket, object_key, content_type, extra_metadata=s3_meta)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload to R2 failed: {e}")
 
     # 3. Generate URL
-    presigned = generate_presigned_url(bucket, object_key)
+    presigned = generate_presigned_url(bucket, object_key, response_content_disposition=cd)
     if redirect:
         return RedirectResponse(url=presigned, status_code=302)
     return make_response("uploaded", presigned)
@@ -370,6 +392,10 @@ async def api_transcribe(
     
     try:
         if key:
+            # Auto-prepend media/ if it's a simplified key like "dQw4w9WgXcQ_140"
+            if not key.startswith("media/") and not key.startswith("audio/") and not key.startswith("video/") and "/" not in key:
+                key = f"media/{key}"
+                
             bucket = os.environ.get("R2_BUCKET_NAME")
             client = get_s3_client()
             try:
@@ -377,7 +403,7 @@ async def api_transcribe(
                 stream = s3_obj["Body"]
             except Exception as e:
                 raise HTTPException(status_code=404, detail=f"Failed to get object from R2: {e}")
-            filename = os.path.basename(key)
+            filename = os.path.basename(key) + ".m4a" # Whisper expects an extension to infer type
         else:
             try:
                 response_obj = requests.get(url, stream=True, timeout=10)

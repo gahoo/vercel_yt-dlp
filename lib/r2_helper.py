@@ -23,14 +23,17 @@ def get_s3_client():
         region_name="auto",
     )
 
-def check_object_exists(bucket_name: str, key: str) -> bool:
-    """Check if an object exists in R2."""
+def get_object_metadata(bucket_name: str, key: str) -> dict | None:
+    """Check if object exists and return its metadata + filesize."""
     client = get_s3_client()
     try:
-        client.head_object(Bucket=bucket_name, Key=key)
-        return True
+        resp = client.head_object(Bucket=bucket_name, Key=key)
+        return {
+            "filesize": resp.get("ContentLength"),
+            "metadata": resp.get("Metadata", {})
+        }
     except Exception:
-        return False
+        return None
 
 def delete_object(bucket_name: str, key: str) -> bool:
     """Delete a specific object from R2."""
@@ -97,16 +100,19 @@ def get_metadata_from_r2(video_id: str, bucket_name: str, max_age_hours: int = 2
     except Exception:
         return None
 
-def generate_presigned_url(bucket_name: str, key: str, expires_in: int = 3600) -> str:
+def generate_presigned_url(bucket_name: str, key: str, expires_in: int = 3600, response_content_disposition: str = None) -> str:
     """Generate a pre-signed download URL for R2."""
     client = get_s3_client()
+    params = {"Bucket": bucket_name, "Key": key}
+    if response_content_disposition:
+        params["ResponseContentDisposition"] = response_content_disposition
     return client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": bucket_name, "Key": key},
+        Params=params,
         ExpiresIn=expires_in
     )
 
-def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, content_type: str = "audio/mp4") -> None:
+def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, content_type: str = "audio/mp4", extra_metadata: dict = None) -> None:
     """
     Download from audio URL to a temporary file, then upload to R2.
     This avoids boto3/requests pipeline deadlocks while still keeping
@@ -122,28 +128,31 @@ def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, conte
             r.raise_for_status()
             for chunk in r.iter_content(chunk_size=8192):
                 tmp_file.write(chunk)
-                
     # Upload to R2
     try:
+        from boto3.s3.transfer import TransferConfig
         config = TransferConfig(
             multipart_threshold=8 * 1024 * 1024,
             max_concurrency=2,
             multipart_chunksize=8 * 1024 * 1024,
             use_threads=True,
         )
+        extra_args = {"ContentType": content_type}
+        if extra_metadata:
+            extra_args["Metadata"] = extra_metadata
+            
         client.upload_file(
             Filename=tmp_filename,
             Bucket=bucket_name,
             Key=object_key,
             Config=config,
-            ExtraArgs={"ContentType": content_type},
+            ExtraArgs=extra_args,
         )
     finally:
         # Clean up
+        import os
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
-
-
 # ---------------------------------------------------------------------------
 # Cookie Management
 # ---------------------------------------------------------------------------
