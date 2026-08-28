@@ -16,6 +16,52 @@ import yt_dlp
 TMP_DIR = "/tmp"
 
 
+def resolve_format(formats: list[dict], selector: str) -> dict | None:
+    """
+    Resolve a format selector (e.g. '140', 'bestaudio', 'worstvideo') 
+    against a list of formats locally, without needing yt-dlp.
+    """
+    if not formats:
+        return None
+        
+    # 1. Exact match by format_id
+    for f in formats:
+        if str(f.get("format_id")) == str(selector):
+            return f
+            
+    # 2. Dynamic selector matching (bestaudio, worstvideo, etc.)
+    # yt-dlp logic is complex, this is a simplified heuristic approximation
+    audio_only = [f for f in formats if f.get("type") == "audio"]
+    video_only = [f for f in formats if f.get("type") == "video"]
+    video_audio = [f for f in formats if f.get("type") == "video+audio"]
+    all_video = video_only + video_audio
+    
+    def get_sort_key(f, key):
+        val = f.get(key)
+        return float(val) if val is not None else 0.0
+
+    if selector == "bestaudio" and audio_only:
+        return sorted(audio_only, key=lambda f: get_sort_key(f, "abr"), reverse=True)[0]
+    elif selector == "worstaudio" and audio_only:
+        return sorted(audio_only, key=lambda f: get_sort_key(f, "abr"))[0]
+    elif selector == "bestvideo" and all_video:
+        return sorted(all_video, key=lambda f: get_sort_key(f, "vbr"), reverse=True)[0]
+    elif selector == "worstvideo" and all_video:
+        return sorted(all_video, key=lambda f: get_sort_key(f, "vbr"))[0]
+    elif selector == "best":
+        if video_audio:
+            return sorted(video_audio, key=lambda f: get_sort_key(f, "tbr"), reverse=True)[0]
+        elif all_video:
+            return sorted(all_video, key=lambda f: get_sort_key(f, "tbr"), reverse=True)[0]
+    elif selector == "worst":
+        if video_audio:
+            return sorted(video_audio, key=lambda f: get_sort_key(f, "tbr"))[0]
+        elif all_video:
+            return sorted(all_video, key=lambda f: get_sort_key(f, "tbr"))[0]
+            
+    return None
+
+
 def _base_opts(player_client: str | None = None) -> dict[str, Any]:
     """Base yt-dlp options shared across all operations."""
     opts = {

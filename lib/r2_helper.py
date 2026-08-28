@@ -61,6 +61,42 @@ def delete_objects_by_prefix(bucket_name: str, prefix: str) -> list[str]:
             
     return deleted_keys
 
+def upload_metadata_to_r2(video_id: str, metadata: dict, bucket_name: str) -> bool:
+    """Upload simplified metadata JSON to R2."""
+    import json
+    client = get_s3_client()
+    key = f"metadata/{video_id}.json"
+    try:
+        client.put_object(
+            Bucket=bucket_name,
+            Key=key,
+            Body=json.dumps(metadata, ensure_ascii=False).encode('utf-8'),
+            ContentType="application/json"
+        )
+        return True
+    except Exception:
+        return False
+
+def get_metadata_from_r2(video_id: str, bucket_name: str, max_age_hours: int = 24) -> dict | None:
+    """Retrieve metadata JSON from R2 if it is younger than max_age_hours."""
+    import json
+    from datetime import datetime, timezone
+    client = get_s3_client()
+    key = f"metadata/{video_id}.json"
+    try:
+        response = client.get_object(Bucket=bucket_name, Key=key)
+        last_modified = response['LastModified']
+        
+        # Check TTL
+        age_hours = (datetime.now(timezone.utc) - last_modified).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            return None
+            
+        body = response['Body'].read().decode('utf-8')
+        return json.loads(body)
+    except Exception:
+        return None
+
 def generate_presigned_url(bucket_name: str, key: str, expires_in: int = 3600) -> str:
     """Generate a pre-signed download URL for R2."""
     client = get_s3_client()

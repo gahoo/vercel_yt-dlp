@@ -20,11 +20,12 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 # Add project root to path so we can import lib/
 
-from lib.ytdlp_helper import extract_info, get_subtitle_content, get_stream_url
+from lib.ytdlp_helper import extract_info, get_subtitle_content, get_stream_url, resolve_format
 from lib.r2_helper import (
     check_object_exists, generate_presigned_url, stream_upload_to_r2, get_s3_client,
     upload_cookies_to_r2, get_cookies_status, delete_cookies_from_r2,
-    delete_object, delete_objects_by_prefix
+    delete_object, delete_objects_by_prefix,
+    upload_metadata_to_r2, get_metadata_from_r2
 )
 
 # ---------------------------------------------------------------------------
@@ -80,12 +81,30 @@ async def root():
 async def api_info(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
+    overwrite: bool = Query(False, description="Force refresh metadata cache"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
-    """Extract video metadata without downloading."""
+    """Extract video metadata without downloading. Uses R2 cache to speed up requests."""
     target = url or id
     if not target:
         raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
+        
+    bucket = os.environ.get("R2_BUCKET_NAME")
+    
+    # Try to extract video ID for caching
+    import re
+    extracted_id = id
+    if not extracted_id and url:
+        match = re.search(r'(?:v=|youtu\.be/|/v/|/embed/|/shorts/)([^&?]+)', url)
+        if match:
+            extracted_id = match.group(1)
+            
+    # Check cache
+    if bucket and extracted_id and not overwrite:
+        cached_meta = get_metadata_from_r2(extracted_id, bucket, max_age_hours=24)
+        if cached_meta:
+            cached_meta["_cache_hit"] = True
+            return cached_meta
 
     try:
         info = extract_info(target, player_client=player_client)
@@ -115,13 +134,19 @@ async def api_info(
         else: fmt["type"] = "unknown"
         formats.append(fmt)
 
-    return {
+    result = {
         "id": info.get("id"),
         "title": info.get("title"),
         "duration": info.get("duration"),
         "formats": formats,
         "subtitles": list(info.get("subtitles", {}).keys()),
     }
+    
+    # Save to cache
+    if bucket and extracted_id:
+        upload_metadata_to_r2(extracted_id, result, bucket)
+        
+    return result
 
 @app.get("/api/subtitles", dependencies=[Depends(verify_api_key)])
 async def api_subtitles(
@@ -203,21 +228,26 @@ async def api_download(
     if not bucket:
         raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
 
-    # Fast-path cache probe: if we know the video_id and it's a specific format,
-    # we can check R2 directly and skip the 5-second yt-dlp extraction.
     import re
     extracted_id = id
     if not extracted_id and url:
         match = re.search(r'(?:v=|youtu\.be/|/v/|/embed/|/shorts/)([^&?]+)', url)
         if match:
             extracted_id = match.group(1)
-            
-    is_specific_format = target_format not in ("bestaudio", "worst", "best", "bestvideo")
-    if not overwrite and extracted_id and is_specific_format:
-        # Probe common extensions to find an exact match in cache
-        for possible_prefix in ["audio", "video"]:
-            for possible_ext in ["m4a", "webm", "mp4"]:
-                probe_key = f"{possible_prefix}/{extracted_id}_{target_format}.{possible_ext}"
+
+    # 1. Precise Media Cache Probe (using metadata)
+    if not overwrite and extracted_id and bucket:
+        cached_meta = get_metadata_from_r2(extracted_id, bucket)
+        if cached_meta:
+            # Resolve exact format from the cached metadata
+            resolved = resolve_format(cached_meta.get("formats", []), target_format)
+            if resolved:
+                r_format_id = resolved.get("format_id")
+                r_ext = resolved.get("ext", "m4a")
+                r_vcodec = resolved.get("vcodec")
+                r_prefix = "video" if r_vcodec and r_vcodec != "none" else "audio"
+                
+                probe_key = f"{r_prefix}/{extracted_id}_{r_format_id}.{r_ext}"
                 if check_object_exists(bucket, probe_key):
                     presigned = generate_presigned_url(bucket, probe_key)
                     if redirect:
@@ -225,8 +255,10 @@ async def api_download(
                     return {
                         "status": "cached",
                         "id": extracted_id,
-                        "format_id": target_format,
-                        "ext": possible_ext,
+                        "title": cached_meta.get("title"),
+                        "format_id": r_format_id,
+                        "ext": r_ext,
+                        "filesize": resolved.get("filesize"),
                         "key": probe_key,
                         "url": presigned,
                         "fast_cache_hit": True
