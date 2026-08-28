@@ -152,8 +152,8 @@ async def api_subtitles(
 async def api_stream(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
-    type: str = Query("audio"),
-    quality: str = Query("worst"),
+    type: str = Query("audio", description="'audio', 'video', or 'both' (ignored if format is an ID)"),
+    format: str = Query("worst", description="Format selector (e.g. 'worst', 'bestaudio', '140')"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Get direct stream URL(s) (prefers https over m3u8)."""
@@ -162,7 +162,7 @@ async def api_stream(
         raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
 
     try:
-        result = get_stream_url(target, type_=type, quality=quality, player_client=player_client)
+        result = get_stream_url(target, type_=type, quality=format, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not result.get("url"):
@@ -206,7 +206,12 @@ async def api_download(
 
     video_id = info.get("id", "audio")
     ext = info.get("ext", "m4a")
-    object_key = f"audio/{video_id}.{ext}"
+    
+    # Use resolved format_id in cache key to avoid collisions
+    # Default to the requested format string if format_id is missing
+    resolved_format_id = info.get("format_id") or format.replace("/", "_")
+    object_key = f"media/{video_id}_{resolved_format_id}.{ext}"
+    
     content_type = "audio/mp4" if ext == "m4a" else ("audio/webm" if ext == "webm" else "application/octet-stream")
 
     # 1. Check if exists (Cache hit)
@@ -231,7 +236,7 @@ async def api_download(
 
 @app.get("/api/transcribe", dependencies=[Depends(verify_api_key)])
 async def api_transcribe(
-    key: str = Query(None, description="R2 object key (e.g., audio/123.m4a)"),
+    key: str = Query(None, description="R2 object key (e.g., media/123_140.m4a)"),
     url: str = Query(None, description="Direct audio URL to stream from"),
     model: str = Query("whisper-large-v3", description="Groq Whisper model"),
 ):
