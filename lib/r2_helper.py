@@ -112,47 +112,63 @@ def generate_presigned_url(bucket_name: str, key: str, expires_in: int = 3600, r
         ExpiresIn=expires_in
     )
 
-def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, content_type: str = "audio/mp4", extra_metadata: dict = None) -> None:
+def stream_upload_to_r2(audio_url: str, bucket_name: str, object_key: str, content_type: str = "audio/mp4", extra_metadata: dict = None, true_stream: bool = False) -> None:
     """
-    Download from audio URL to a temporary file, then upload to R2.
-    This avoids boto3/requests pipeline deadlocks while still keeping
-    memory usage low. The /tmp directory on Vercel provides 512MB.
+    Download from audio URL and upload to R2.
+    If true_stream is True, pipe directly memory-to-memory.
+    Otherwise, buffer to a temporary file first (safer for Serverless memory limits).
     """
     client = get_s3_client()
-    import tempfile
+    from boto3.s3.transfer import TransferConfig
+    import requests
     
-    # Download to a temporary file
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        tmp_filename = tmp_file.name
-        with requests.get(audio_url, stream=True, timeout=30) as r:
-            r.raise_for_status()
-            for chunk in r.iter_content(chunk_size=8192):
-                tmp_file.write(chunk)
-    # Upload to R2
-    try:
-        from boto3.s3.transfer import TransferConfig
-        config = TransferConfig(
-            multipart_threshold=8 * 1024 * 1024,
-            max_concurrency=2,
-            multipart_chunksize=8 * 1024 * 1024,
-            use_threads=True,
-        )
-        extra_args = {"ContentType": content_type}
-        if extra_metadata:
-            extra_args["Metadata"] = extra_metadata
-            
-        client.upload_file(
-            Filename=tmp_filename,
+    config = TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        max_concurrency=2,
+        multipart_chunksize=8 * 1024 * 1024,
+        use_threads=True,
+    )
+    extra_args = {"ContentType": content_type}
+    if extra_metadata:
+        extra_args["Metadata"] = extra_metadata
+
+    if true_stream:
+        # True Memory-to-Memory streaming
+        r = requests.get(audio_url, stream=True, timeout=30)
+        r.raise_for_status()
+        # urllib3 raw stream object
+        raw_stream = r.raw
+        # r.raw doesn't strictly have a length Boto3 trusts, but TransferManager handles it
+        client.upload_fileobj(
+            Fileobj=raw_stream,
             Bucket=bucket_name,
             Key=object_key,
             Config=config,
-            ExtraArgs=extra_args,
+            ExtraArgs=extra_args
         )
-    finally:
-        # Clean up
+        r.close()
+    else:
+        # Fallback to safe Disk-Buffered streaming
+        import tempfile
         import os
-        if os.path.exists(tmp_filename):
-            os.remove(tmp_filename)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_filename = tmp_file.name
+            with requests.get(audio_url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    tmp_file.write(chunk)
+                    
+        try:
+            client.upload_file(
+                Filename=tmp_filename,
+                Bucket=bucket_name,
+                Key=object_key,
+                Config=config,
+                ExtraArgs=extra_args,
+            )
+        finally:
+            if os.path.exists(tmp_filename):
+                os.remove(tmp_filename)
 # ---------------------------------------------------------------------------
 # Cookie Management
 # ---------------------------------------------------------------------------
