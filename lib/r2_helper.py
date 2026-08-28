@@ -24,13 +24,19 @@ def get_s3_client():
     )
 
 def get_object_metadata(bucket_name: str, key: str) -> dict | None:
-    """Check if object exists and return its metadata + filesize."""
+    """Check if object exists and return its metadata + filesize + last_modified."""
     client = get_s3_client()
     try:
         resp = client.head_object(Bucket=bucket_name, Key=key)
+        
+        last_modified = resp.get("LastModified")
+        # Format as ISO 8601 string if available
+        uploaded_at = last_modified.isoformat() if last_modified else None
+        
         return {
             "filesize": resp.get("ContentLength"),
-            "metadata": resp.get("Metadata", {})
+            "metadata": resp.get("Metadata", {}),
+            "uploaded_at": uploaded_at
         }
     except Exception:
         return None

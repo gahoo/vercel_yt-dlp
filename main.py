@@ -242,7 +242,7 @@ def api_download(
         if match:
             extracted_id = match.group(1)
 
-    def make_response(status_val, presigned_url, extra_meta=None):
+    def make_response(status_val, presigned_url, extra_meta=None, uploaded_at=None):
         resp = {
             "status": status_val,
             "id": video_id,
@@ -251,7 +251,8 @@ def api_download(
             "ext": ext,
             "filesize": (info.get("filesize") or info.get("filesize_approx")) if info else None,
             "key": object_key,
-            "url": presigned_url
+            "url": presigned_url,
+            "uploaded_at": uploaded_at
         }
         if extra_meta:
             resp.update(extra_meta)
@@ -297,6 +298,7 @@ def api_download(
                         "filesize": meta_data.get("filesize") or resolved.get("filesize"),
                         "key": probe_key,
                         "url": presigned,
+                        "uploaded_at": meta_data.get("uploaded_at"),
                         "fast_cache_hit": True
                     })
         elif is_specific_format:
@@ -322,6 +324,7 @@ def api_download(
                     "filesize": meta_data.get("filesize"),
                     "key": probe_key,
                     "url": presigned,
+                    "uploaded_at": meta_data.get("uploaded_at"),
                     "fast_cache_hit": "fallback"
                 })
 
@@ -352,7 +355,7 @@ def api_download(
             presigned = generate_presigned_url(bucket, object_key, response_content_disposition=cd)
             if redirect:
                 return RedirectResponse(url=presigned, status_code=302)
-            return make_response("cached", presigned)
+            return make_response("cached", presigned, uploaded_at=meta_data.get("uploaded_at"))
 
     # 2. Stream upload (Cache miss)
     try:
@@ -366,9 +369,13 @@ def api_download(
 
     # 3. Generate URL
     presigned = generate_presigned_url(bucket, object_key, response_content_disposition=cd)
+    
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
     if redirect:
         return RedirectResponse(url=presigned, status_code=302)
-    return make_response("uploaded", presigned)
+    return make_response("uploaded", presigned, uploaded_at=now_iso)
 
 
 @app.get("/api/transcribe", dependencies=[Depends(verify_api_key)])
