@@ -213,10 +213,14 @@ async def api_download(
     video_id = info.get("id", "audio")
     ext = info.get("ext", "m4a")
     
+    # Check if this format contains a video track
+    vcodec = info.get("vcodec")
+    prefix = "video" if vcodec and vcodec != "none" else "audio"
+    
     # Use resolved format_id in cache key to avoid collisions
     # Default to the requested format string if format_id is missing
     resolved_format_id = info.get("format_id") or target_format.replace("/", "_")
-    object_key = f"media/{video_id}_{resolved_format_id}.{ext}"
+    object_key = f"{prefix}/{video_id}_{resolved_format_id}.{ext}"
     
     content_type = "audio/mp4" if ext == "m4a" else ("audio/webm" if ext == "webm" else "application/octet-stream")
 
@@ -253,7 +257,7 @@ async def api_download(
 
 @app.get("/api/transcribe", dependencies=[Depends(verify_api_key)])
 async def api_transcribe(
-    key: str = Query(None, description="R2 object key (e.g., media/123_140.m4a)"),
+    key: str = Query(None, description="R2 object key (e.g., audio/123_140.m4a)"),
     url: str = Query(None, description="Direct audio URL to stream from"),
     model: str = Query("whisper-large-v3", description="Groq Whisper model"),
 ):
