@@ -82,6 +82,7 @@ async def api_info(
     url: str = Query(None, description="Video URL"),
     id: str = Query(None, description="Video ID (can be used instead of url)"),
     overwrite: bool = Query(False, description="Force refresh metadata cache"),
+    include_formats: bool = Query(True, alias="formats", description="Whether to include the full formats list in the response"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Extract video metadata without downloading. Uses R2 cache to speed up requests."""
@@ -104,7 +105,9 @@ async def api_info(
         cached_meta = get_metadata_from_r2(extracted_id, bucket, max_age_hours=24)
         if cached_meta:
             cached_meta["_cache_hit"] = True
-            return cached_meta
+            if not include_formats and "formats" in cached_meta:
+                del cached_meta["formats"]
+            return JSONResponse(content=cached_meta)
 
     try:
         info = extract_info(target, player_client=player_client)
@@ -142,11 +145,14 @@ async def api_info(
         "subtitles": list(info.get("subtitles", {}).keys()),
     }
     
-    # Save to cache
+    # Save to cache ALWAYS with formats
     if bucket and extracted_id:
         upload_metadata_to_r2(extracted_id, result, bucket)
         
-    return result
+    if not include_formats:
+        del result["formats"]
+        
+    return JSONResponse(content=result)
 
 @app.get("/api/subtitles", dependencies=[Depends(verify_api_key)])
 async def api_subtitles(
@@ -235,7 +241,24 @@ async def api_download(
         if match:
             extracted_id = match.group(1)
 
+    def make_response(status_val, presigned_url, extra_meta=None):
+        resp = {
+            "status": status_val,
+            "id": video_id,
+            "title": info.get("title") if info else None,
+            "format_id": info.get("format_id") if info else None,
+            "ext": ext,
+            "filesize": (info.get("filesize") or info.get("filesize_approx")) if info else None,
+            "key": object_key,
+            "url": presigned_url
+        }
+        if extra_meta:
+            resp.update(extra_meta)
+        return JSONResponse(content=resp)
+
     # 1. Precise Media Cache Probe (using metadata)
+    is_specific_format = target_format not in ("bestaudio", "worst", "best", "bestvideo")
+    
     if not overwrite and extracted_id and bucket:
         cached_meta = get_metadata_from_r2(extracted_id, bucket)
         if cached_meta:
@@ -252,7 +275,7 @@ async def api_download(
                     presigned = generate_presigned_url(bucket, probe_key)
                     if redirect:
                         return RedirectResponse(url=presigned, status_code=302)
-                    return {
+                    return JSONResponse(content={
                         "status": "cached",
                         "id": extracted_id,
                         "title": cached_meta.get("title"),
@@ -262,7 +285,26 @@ async def api_download(
                         "key": probe_key,
                         "url": presigned,
                         "fast_cache_hit": True
-                    }
+                    })
+        elif is_specific_format:
+            # FALLBACK: No metadata cache, but format is specific (e.g. 140).
+            # Do a brute-force probe to skip the 5s yt-dlp delay.
+            for possible_prefix in ["audio", "video"]:
+                for possible_ext in ["m4a", "webm", "mp4"]:
+                    probe_key = f"{possible_prefix}/{extracted_id}_{target_format}.{possible_ext}"
+                    if check_object_exists(bucket, probe_key):
+                        presigned = generate_presigned_url(bucket, probe_key)
+                        if redirect:
+                            return RedirectResponse(url=presigned, status_code=302)
+                        return JSONResponse(content={
+                            "status": "cached",
+                            "id": extracted_id,
+                            "format_id": target_format,
+                            "ext": possible_ext,
+                            "key": probe_key,
+                            "url": presigned,
+                            "fast_cache_hit": "brute_force"
+                        })
 
     try:
         info = get_stream_url(target, type_="audio", quality=target_format, player_client=player_client)
@@ -281,23 +323,10 @@ async def api_download(
     prefix = "video" if vcodec and vcodec != "none" else "audio"
     
     # Use resolved format_id in cache key to avoid collisions
-    # Default to the requested format string if format_id is missing
     resolved_format_id = info.get("format_id") or target_format.replace("/", "_")
     object_key = f"{prefix}/{video_id}_{resolved_format_id}.{ext}"
     
     content_type = "audio/mp4" if ext == "m4a" else ("audio/webm" if ext == "webm" else "application/octet-stream")
-
-    def make_response(status_val, presigned_url):
-        return {
-            "status": status_val,
-            "id": video_id,
-            "title": info.get("title"),
-            "format_id": info.get("format_id"),
-            "ext": ext,
-            "filesize": info.get("filesize") or info.get("filesize_approx"),
-            "key": object_key,
-            "url": presigned_url
-        }
 
     # 1. Check if exists (Cache hit)
     if not overwrite and check_object_exists(bucket, object_key):
