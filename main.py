@@ -77,12 +77,17 @@ async def root():
 
 @app.get("/api/info", dependencies=[Depends(verify_api_key)])
 async def api_info(
-    url: str = Query(...),
+    url: str = Query(None, description="Video URL"),
+    id: str = Query(None, description="Video ID (can be used instead of url)"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Extract video metadata without downloading."""
+    target = url or id
+    if not target:
+        raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
+
     try:
-        info = extract_info(url, player_client=player_client)
+        info = extract_info(target, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -91,9 +96,15 @@ async def api_info(
         fmt = {
             "format_id": f.get("format_id"),
             "ext": f.get("ext"),
+            "resolution": f.get("resolution") or (f"{f.get('width')}x{f.get('height')}" if f.get("width") else None),
+            "fps": f.get("fps"),
+            "tbr": f.get("tbr"),
+            "vbr": f.get("vbr"),
+            "abr": f.get("abr"),
             "filesize": f.get("filesize") or f.get("filesize_approx"),
             "acodec": f.get("acodec"),
             "vcodec": f.get("vcodec"),
+            "format_note": f.get("format_note"),
         }
         has_audio = f.get("acodec") and f.get("acodec") != "none"
         has_video = f.get("vcodec") and f.get("vcodec") != "none"
@@ -104,6 +115,7 @@ async def api_info(
         formats.append(fmt)
 
     return {
+        "id": info.get("id"),
         "title": info.get("title"),
         "duration": info.get("duration"),
         "formats": formats,
@@ -112,17 +124,22 @@ async def api_info(
 
 @app.get("/api/subtitles", dependencies=[Depends(verify_api_key)])
 async def api_subtitles(
-    url: str = Query(...),
+    url: str = Query(None, description="Video URL"),
+    id: str = Query(None, description="Video ID (can be used instead of url)"),
     lang: str = Query("en"),
     format: str = Query("vtt"),
     auto: bool = Query(True),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Get subtitle/caption content."""
+    target = url or id
+    if not target:
+        raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
+
     if format not in ("vtt", "srt", "json3"):
         raise HTTPException(status_code=400, detail="Use vtt, srt, or json3.")
     try:
-        content = get_subtitle_content(url, lang=lang, fmt=format, auto=auto, player_client=player_client)
+        content = get_subtitle_content(target, lang=lang, fmt=format, auto=auto, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if content is None:
@@ -133,14 +150,19 @@ async def api_subtitles(
 
 @app.get("/api/stream", dependencies=[Depends(verify_api_key)])
 async def api_stream(
-    url: str = Query(...),
+    url: str = Query(None, description="Video URL"),
+    id: str = Query(None, description="Video ID (can be used instead of url)"),
     type: str = Query("audio"),
     quality: str = Query("worst"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
 ):
     """Get direct stream URL(s) (prefers https over m3u8)."""
+    target = url or id
+    if not target:
+        raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
+
     try:
-        result = get_stream_url(url, type_=type, quality=quality, player_client=player_client)
+        result = get_stream_url(target, type_=type, quality=quality, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not result.get("url"):
@@ -153,7 +175,8 @@ async def api_stream(
 
 @app.get("/api/download", dependencies=[Depends(verify_api_key)])
 async def api_download(
-    url: str = Query(...),
+    url: str = Query(None, description="Video URL"),
+    id: str = Query(None, description="Video ID (can be used instead of url)"),
     format: str = Query("bestaudio"),
     redirect: bool = Query(False, description="If true, 302 redirect to the R2 download URL instead of returning JSON"),
     player_client: str = Query(None, description="YouTube player client, e.g. 'ios', 'mediaconnect,ios,web'"),
@@ -164,12 +187,16 @@ async def api_download(
     If the file already exists in R2, returns the URL immediately.
     When redirect=true, responds with a 302 redirect for direct download.
     """
+    target = url or id
+    if not target:
+        raise HTTPException(status_code=400, detail="Must provide 'url' or 'id'")
+
     bucket = os.environ.get("R2_BUCKET_NAME")
     if not bucket:
         raise HTTPException(status_code=500, detail="R2_BUCKET_NAME not configured")
 
     try:
-        info = get_stream_url(url, type_="audio", quality=format, player_client=player_client)
+        info = get_stream_url(target, type_="audio", quality=format, player_client=player_client)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to get stream: {e}")
 
